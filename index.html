@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Yen's InBody</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0b1017;
+      --panel: #121826;
+      --text: #e6eaf2;
+      --muted: #9aa4b2;
+      --accent: #4cc9f0;
+      --grid: rgba(255,255,255,0.08);
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Noto Sans TC", system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    .wrap {
+      max-width: 1080px;
+      margin: 24px auto;
+      padding: 0 16px;
+      display: grid;
+      gap: 16px;
+    }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .title { font-weight: 600; letter-spacing: 0.2px; }
+    .card {
+      background: var(--panel);
+      border: 1px solid #1f2a3d;
+      border-radius: 16px;
+      padding: 12px 12px 8px 12px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+    }
+    #chart { width: 100%; height: 60vh; min-height: 460px; }
+
+    .hint { color: var(--muted); font-size: 13px; }
+
+    /* HTML 表格（清楚樣式） */
+    .table-wrap{ overflow-x:auto; }
+    .table-scroll{ width:100%; overflow-x:auto; }
+    table.data{ width:100%; border-collapse:collapse; font-size:15px; }
+    table.data th, table.data td{ border:1px solid #253145; padding:10px 12px; text-align:center; }
+    table.data th{ background:#0f1522; color:#dbe6f5; position:sticky; top:0; z-index:1; }
+    .row-label{ text-align:right; white-space:nowrap; background:#0f1522; color:#cfe0f4; }
+    .sticky-col{ position:sticky; left:0; z-index:2; }
+    thead .sticky-col{ z-index:3; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="title">Yen's InBody</div>
+    </header>
+
+    <div class="card">
+      <div id="chart" role="img" aria-label="InBody 折線圖"></div>
+    </div>
+
+    <div class="card">
+      <div id="dataTable" class="table-wrap" aria-label="InBody 數據表"></div>
+    </div>
+
+    <div class="hint">
+      如果覺得yen又胖起來了請提醒他繼續減脂^_^
+    </div>
+  </div>
+
+  <!-- ECharts -->
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+  <script>
+    // ====== 佈局：slider 固定在主圖下、日期標籤上 ======
+    const GRID0_TOP = 36;          // 主圖 top
+    const GRID0_HEIGHT = 340;      // 主圖高度
+    const SLIDER_H = 16;           // slider 高度
+    const GAP = 6;                 // 元件間距
+    const GRID1_HEIGHT = 44;       // 底部日期軸高度（兩行）
+
+    // ====== 讀取 JSON ======
+    const DEFAULT_DATA_URL = 'inbody.json'; // 預設讀取檔案（可用 ?data=/path/custom.json 覆寫）
+    function getQueryParam(name){
+      const p = new URLSearchParams(location.search);
+      return p.get(name);
+    }
+    function getDataUrl(){
+      return getQueryParam('data') || DEFAULT_DATA_URL;
+    }
+
+    // ====== 格式工具 ======
+    function pad(n){ return String(n).padStart(2,'0'); }
+    function makeLabel(yyMMdd, HHmm){
+      if(!yyMMdd) return '';
+      // 接受 '25.10.30' 或 '2025-10-30' / '2025/10/30' / '25-10-30' 等
+      let s = String(yyMMdd).replace(/\s+/g,'').replace(/[\/-]/g,'.');
+      const parts = s.split('.').filter(Boolean);
+      let yy='00', mm='00', dd='00';
+      if(parts.length === 3){
+        if(parts[0].length === 4){
+          yy = pad(Number(parts[0]) % 100);
+          mm = pad(parts[1]);
+          dd = pad(parts[2]);
+        } else {
+          yy = pad(parts[0]);
+          mm = pad(parts[1]);
+          dd = pad(parts[2]);
+        }
+      }
+      let HH='00', MM='00';
+      if(HHmm){
+        const tm = String(HHmm).replace(/\s+/g,'');
+        const seg = tm.split(':');
+        if(seg.length>=2){ HH = pad(seg[0]); MM = pad(seg[1]); }
+      }
+      return `${yy}. ${mm}. ${dd}\n${HH}:${MM}`;
+    }
+
+    // 將簡潔 JSON（[[w,smm,bfp,"yy.MM.dd","HH:mm"], ...]）轉為繪圖資料
+    function fromSimpleJSON(rows){
+      const labels = [];
+      const weight = [];
+      const smm = [];
+      const bfp = [];
+      (rows||[]).forEach((r, idx) => {
+        if(!Array.isArray(r) || r.length < 5){
+          console.warn(`第 ${idx+1} 筆格式不符，需為 [weight, smm, bfp, "yy.MM.dd", "HH:mm"]`, r);
+          return;
+        }
+        const w = (r[0]!==null && r[0]!=='' && !Number.isNaN(Number(r[0]))) ? Number(r[0]) : null;
+        const s = (r[1]!==null && r[1]!=='' && !Number.isNaN(Number(r[1]))) ? Number(r[1]) : null;
+        const f = (r[2]!==null && r[2]!=='' && !Number.isNaN(Number(r[2]))) ? Number(r[2]) : null;
+        const d = String(r[3]);
+        const t = String(r[4]);
+        labels.push(makeLabel(d, t));
+        weight.push(w);
+        smm.push(s);
+        bfp.push(f);
+      });
+      return { labels, weight, smm, bfp };
+    }
+
+    // ====== 表格產生（跟 dataZoom 視窗同步） ======
+    function renderTableWindow(S, startIdx, endIdx){
+      const host = document.getElementById('dataTable');
+      if(!host) return;
+      const s = Math.max(0, startIdx|0);
+      const e = Math.min(S.labels.length-1, endIdx|0);
+      const labels = S.labels.slice(s, e+1);
+      const fmt = v => (v!=null && !Number.isNaN(v)) ? Number(v).toFixed(1) : '-';
+      const w = S.weight.slice(s, e+1).map(fmt);
+      const sm = S.smm.slice(s, e+1).map(fmt);
+      const bf = S.bfp.slice(s, e+1).map(fmt);
+
+      const head = ['指標＼時間', ...labels];
+      const rowW = ['體重 (kg)', ...w];
+      const rowS = ['骨骼肌重 (kg)', ...sm];
+      const rowF = ['體脂肪率 (%)', ...bf];
+
+      const thead = `<thead><tr>${head.map((h,i)=> i===0? `<th class="row-label sticky-col">${h}</th>` : `<th>${h}</th>`).join('')}</tr></thead>`;
+      const tr = r => `<tr>${r.map((c,i)=> i===0? `<td class="row-label sticky-col">${c}</td>` : `<td>${c}</td>`).join('')}</tr>`;
+      const tbody = `<tbody>${[rowW,rowS,rowF].map(tr).join('')}</tbody>`;
+      host.innerHTML = `<div class="table-scroll"><table class="data">${thead}${tbody}</table></div>`;
+    }
+
+    // ====== dataZoom 視窗工具 ======
+    function makeZoom(labels, visibleCount){
+      const len = labels.length;
+      const N = Math.max(visibleCount || 12, 3);
+      if(len > N){
+        const startIdx = len - N;
+        const endIdx = len - 1;
+        return {
+          inside: { type: 'inside', xAxisIndex: [0,1], moveOnMouseWheel: true, moveOnMouseMove: true, zoomOnMouseWheel: false, startValue: startIdx, endValue: endIdx },
+          slider: { type: 'slider', xAxisIndex: [0,1], top: GRID0_TOP + GRID0_HEIGHT + GAP, height: SLIDER_H, startValue: startIdx, endValue: endIdx }
+        };
+      }
+      return {
+        inside: { type: 'inside', xAxisIndex: [0,1], moveOnMouseWheel: true, moveOnMouseMove: true, zoomOnMouseWheel: false, start: 0, end: 100 },
+        slider: { type: 'slider', xAxisIndex: [0,1], top: GRID0_TOP + GRID0_HEIGHT + GAP, height: SLIDER_H, start: 0, end: 100 }
+      };
+    }
+    function getZoomWindow(opt, len){
+      const dz = (opt.dataZoom || []);
+      const pick = dz.find(z => z.type === 'slider') || dz[0] || {};
+      if(pick.startValue != null && pick.endValue != null){
+        return [pick.startValue|0, pick.endValue|0];
+      }
+      const s = pick.start != null ? pick.start : 0;
+      const e = pick.end != null ? pick.end : 100;
+      const startIdx = Math.round((s/100) * (len-1));
+      const endIdx   = Math.round((e/100) * (len-1));
+      return [Math.max(0,startIdx), Math.min(len-1,endIdx)];
+    }
+
+    // ====== 繪圖 ======
+    const el = document.getElementById('chart');
+    const chart = echarts.init(el, null, { renderer: 'canvas' });
+    let CURRENT = null; // 當前資料（labels, weight, smm, bfp）
+
+    function renderFromSimpleRows(rows){
+      const S = fromSimpleJSON(rows);
+      CURRENT = S;
+      const zoomCfg = makeZoom(S.labels, 12);
+      const GRID1_TOP = GRID0_TOP + GRID0_HEIGHT + GAP + SLIDER_H + GAP; // 日期 grid top
+
+      const option = {
+        backgroundColor: 'transparent',
+        textStyle: { color: '#e6eaf2' },
+        grid: [
+          { left: 60, right: 60, top: GRID0_TOP, height: GRID0_HEIGHT },
+          { left: 60, right: 60, top: GRID1_TOP, height: GRID1_HEIGHT },
+        ],
+        axisPointer: { link: [{ xAxisIndex: [0,1] }], label: { show: false } },
+        tooltip: {
+          trigger: 'axis',
+          axisPointer: { type: 'cross', label: { show: false } },
+          backgroundColor: '#0b1220',
+          borderColor: '#2b3750',
+          textStyle: { color: '#e6eaf2' },
+          formatter: (params) => {
+            if(!params || !params.length) return '';
+            const d = (params[0].axisValueLabel ?? params[0].axisValue ?? '').toString();
+            const lines = [`<div style="font-weight:600;margin-bottom:4px">${d.replace('\n',' ')}</div>`];
+            params.forEach(p => {
+              if(p.seriesType !== 'line') return;
+              const unit = p.seriesName.includes('%') ? '%' : (p.seriesName.endsWith('kg') ? 'kg' : '');
+              const val = (p.data != null) ? Number(p.data).toFixed(1) : '-';
+              lines.push(`${p.marker} ${p.seriesName}: <b>${val}${unit}</b>`);
+            });
+            return lines.join('<br />');
+          }
+        },
+        legend: {
+          top: 6,
+          left: 'center',
+          textStyle: { color: '#c9d3e0' },
+          icon: 'roundRect',
+          itemHeight: 10,
+          itemWidth: 14,
+          itemGap: 16,
+          data: ['體重 kg','骨骼肌重 kg','體脂肪率 %']
+        },
+        dataZoom: [ zoomCfg.inside, zoomCfg.slider ],
+        xAxis: [
+          { // 主圖用：不顯示標籤
+            type: 'category', gridIndex: 0, boundaryGap: true,
+            axisLine: { lineStyle: { color: '#2a3550' } },
+            axisTick: { show: false },
+            splitLine: { show: true, lineStyle: { color: '#1e2840' } },
+            axisLabel: { show: false },
+            data: S.labels,
+          },
+          { // 日期顯示用
+            type: 'category', gridIndex: 1, boundaryGap: true,
+            axisLine: { lineStyle: { color: '#2a3550' } },
+            axisTick: { show: false },
+            splitLine: { show: false },
+            axisLabel: { color: '#b7c2d1', formatter: (val)=>val, margin: 12 },
+            data: S.labels,
+          }
+        ],
+        yAxis: [
+          {
+            gridIndex: 0,
+            name: 'kg',
+            nameTextStyle: { color: '#9bb0c7' },
+            axisLine: { show: true, lineStyle: { color: '#2a3550' } },
+            axisTick: { show: false },
+            splitLine: { show: true, lineStyle: { color: '#1e2840' } },
+            axisLabel: { color: '#cfe0f4' },
+            scale: true,
+            axisPointer: { label: { show: false } },
+          },
+          {
+            gridIndex: 0,
+            name: '%', position: 'right',
+            nameTextStyle: { color: '#9bb0c7' },
+            axisLine: { show: true, lineStyle: { color: '#2a3550' } },
+            axisTick: { show: false },
+            splitLine: { show: false },
+            axisLabel: { color: '#cfe0f4' },
+            min: 0, max: 50,
+            axisPointer: { label: { show: false } },
+          },
+          { gridIndex: 1, type: 'value', show: false, min: 0, max: 1 }
+        ],
+        series: [
+          {
+            name: '體重 kg', type: 'line', xAxisIndex: 0, yAxisIndex: 0, smooth: true,
+            showSymbol: true, showAllSymbol: true, symbol: 'circle', symbolSize: 9,
+            itemStyle: { borderWidth: 2, borderColor: '#0b1017' },
+            lineStyle: { width: 3 },
+            emphasis: { focus: 'series', scale: 1.8, itemStyle: { shadowBlur: 18, shadowColor: 'rgba(255,255,255,0.45)' } },
+            data: S.weight,
+          },
+          {
+            name: '骨骼肌重 kg', type: 'line', xAxisIndex: 0, yAxisIndex: 0, smooth: true,
+            showSymbol: true, showAllSymbol: true, symbol: 'circle', symbolSize: 9,
+            itemStyle: { borderWidth: 2, borderColor: '#0b1017' },
+            lineStyle: { width: 3 },
+            emphasis: { focus: 'series', scale: 1.8, itemStyle: { shadowBlur: 18, shadowColor: 'rgba(255,255,255,0.45)' } },
+            data: S.smm,
+          },
+          {
+            name: '體脂肪率 %', type: 'line', xAxisIndex: 0, yAxisIndex: 1, smooth: true,
+            showSymbol: true, showAllSymbol: true, symbol: 'circle', symbolSize: 9,
+            itemStyle: { borderWidth: 2, borderColor: '#0b1017' },
+            lineStyle: { width: 3 },
+            emphasis: { focus: 'series', scale: 1.8, itemStyle: { shadowBlur: 18, shadowColor: 'rgba(255,255,255,0.45)' } },
+            data: S.bfp,
+          },
+          { // 空系列：讓底部日期 grid 接收 axisPointer（不畫東西），不出現在圖例
+            name: '__date_carrier__', type: 'bar', xAxisIndex: 1, yAxisIndex: 2,
+            data: new Array(S.labels.length).fill(0), itemStyle: { opacity: 0 }, silent: true,
+          }
+        ]
+      };
+
+      chart.setOption(option);
+
+      const optNow = chart.getOption();
+      const [sIdx, eIdx] = getZoomWindow(optNow, S.labels.length);
+      renderTableWindow(S, sIdx, eIdx);
+
+      chart.off('dataZoom');
+      chart.on('dataZoom', () => {
+        const opt = chart.getOption();
+        const [s, e] = getZoomWindow(opt, CURRENT.labels.length);
+        renderTableWindow(CURRENT, s, e);
+      });
+    }
+
+    async function loadAndRender(){
+      const url = getDataUrl();
+      try{
+        const res = await fetch(url, { cache: 'no-cache' });
+        if(!res.ok) throw new Error(`HTTP ${res.status}`);
+        const rows = await res.json();
+        if(!Array.isArray(rows)) throw new Error('JSON 須為陣列（如 [[w,smm,bfp,"yy.MM.dd","HH:mm"], ...]）');
+        renderFromSimpleRows(rows);
+      }catch(err){
+        console.warn('載入 inbody.json 失敗，改用內建測試資料 C。', err);
+        // 內建測試資料（大量資料）
+        const SAMPLE_C = (() => {
+          const out = [];
+          const base = new Date('2025-01-01T07:00:00+08:00').getTime();
+          for(let i=0;i<48;i++){
+            const d = new Date(base + i*86400000);
+            const yy = String(d.getFullYear()%100).padStart(2,'0');
+            const mm = String(d.getMonth()+1).padStart(2,'0');
+            const dd = String(d.getDate()).padStart(2,'0');
+            const HH = String(d.getHours()).padStart(2,'0');
+            const MM = String(d.getMinutes()).padStart(2,'0');
+            out.push([66+(i%6)*0.3, 32+(i%5)*0.2, 18-(i%7)*0.2, `${yy}.${mm}.${dd}`, `${HH}:${MM}`]);
+          }
+          return out;
+        })();
+        renderFromSimpleRows(SAMPLE_C);
+      }
+    }
+
+    loadAndRender();
+    window.addEventListener('resize', () => chart.resize());
+  </script>
+</body>
+</html>
