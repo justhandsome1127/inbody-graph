@@ -282,13 +282,13 @@
           },
           {
             gridIndex: 0,
-            name: '%', position: 'right',
+            name: '', position: 'right',
             nameTextStyle: { color: '#9bb0c7' },
             axisLine: { show: true, lineStyle: { color: '#2a3550' } },
             axisTick: { show: false },
             splitLine: { show: false },
             axisLabel: { color: '#cfe0f4' },
-            min: 0, max: 50,
+            min: 5, max: 45,
             axisPointer: { label: { show: false } },
           },
           { gridIndex: 1, type: 'value', show: false, min: 0, max: 1 }
@@ -303,7 +303,7 @@
             data: S.weight,
           },
           {
-            name: '骨骼肌重 kg', type: 'line', xAxisIndex: 0, yAxisIndex: 0, smooth: true,
+            name: '骨骼肌重 kg', type: 'line', xAxisIndex: 0, yAxisIndex: 1, smooth: true,
             showSymbol: true, showAllSymbol: true, symbol: 'circle', symbolSize: 9,
             itemStyle: { borderWidth: 2, borderColor: '#0b1017' },
             lineStyle: { width: 3 },
